@@ -15,7 +15,21 @@ export default function GrowthDiffTable({ diffs, emptyText = '暂无复查比对
   );
 
   const columns: Columns = [
-    { title: '树号', dataIndex: 'treeNo', width: 80 },
+    {
+      title: '树号',
+      dataIndex: 'treeNo',
+      width: 110,
+      render: (value: string, row: RecheckDiff) => (
+        <span>
+          {value}
+          {row.multiRecord ? (
+            <Tag color="orange" style={{ marginLeft: 4 }}>
+              同期多条记录
+            </Tag>
+          ) : null}
+        </span>
+      ),
+    },
     { title: '树种', dataIndex: 'species', width: 110 },
     {
       title: '上期胸径 cm',

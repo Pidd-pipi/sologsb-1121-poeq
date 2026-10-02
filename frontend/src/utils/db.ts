@@ -3,10 +3,11 @@ import type { Plot } from '../types/plot';
 import type { TreeRecord } from '../types/tree';
 import type { RegenShrub } from '../types/regen';
 import type { RecheckDiff } from '../types/recheck';
+import type { RecheckState, TreeGroup } from '../types/treeGroup';
 import { newId } from './id';
 
 export const DB_NAME = 'gbforestplot';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbforestplot:db-version';
 
 class ForestPlotDB extends Dexie {
@@ -14,6 +15,8 @@ class ForestPlotDB extends Dexie {
   trees!: Table<TreeRecord, string>;
   regens!: Table<RegenShrub, string>;
   rechecks!: Table<RecheckDiff, string>;
+  treeGroups!: Table<TreeGroup, string>;
+  recheckState!: Table<RecheckState, string>;
 
   constructor() {
     super(DB_NAME);
@@ -46,6 +49,15 @@ class ForestPlotDB extends Dexie {
             if (row.measuredAt === undefined) row.measuredAt = Date.now();
           });
       });
+    // v3：样木身份校正组 + 复查结果新鲜度（串株校正后旧复查结果失效待重算）
+    this.version(3).stores({
+      plots: 'id, plotNo, locality, forestType, surveyRound, locked, createdAt',
+      trees: 'id, plotId, treeNo, species, round, status, measuredAt',
+      regens: 'id, plotId, layer, species, round, heightCm',
+      rechecks: 'id, plotId, baseRound, targetRound, treeNo, generatedAt',
+      treeGroups: 'id, plotId, status, canonicalTreeNo',
+      recheckState: 'plotId, status',
+    });
   }
 }
 
@@ -69,12 +81,36 @@ export function readDbVersion(): number {
 }
 
 export async function saveRecheckDiffs(diffs: RecheckDiff[]): Promise<void> {
-  await db.rechecks.bulkPut(diffs);
+  const plotId = diffs[0]?.plotId;
+  await db.transaction('rw', db.rechecks, async () => {
+    // 同一样地的比对结果为「当前一代」，保存时整体替换，避免新旧堆积
+    if (plotId) await db.rechecks.where('plotId').equals(plotId).delete();
+    await db.rechecks.bulkPut(diffs);
+  });
 }
 
 export async function loadRecheckDiffs(plotId: string): Promise<RecheckDiff[]> {
   const rows = await db.rechecks.where('plotId').equals(plotId).toArray();
   return rows.sort((a, b) => a.treeNo.localeCompare(b.treeNo));
+}
+
+/** 复查结果新鲜度：样木编号校正后旧结果失效，汇总/导出暂停旧值 */
+export async function getRecheckState(plotId: string): Promise<RecheckState | undefined> {
+  return db.recheckState.get(plotId);
+}
+
+/** 重新生成并保存比对结果后，标记复查结果有效 */
+export async function markRecheckFresh(plotId: string): Promise<void> {
+  await db.recheckState.put({ plotId, status: 'fresh' });
+}
+
+/** 样木编号校正后，标记引用这些样木的复查结果失效、待重算 */
+export async function markRecheckStale(
+  plotId: string,
+  reason: string,
+  invalidatedAt = Date.now(),
+): Promise<void> {
+  await db.recheckState.put({ plotId, status: 'stale', invalidatedAt, reason });
 }
 
 /** 首次进入灌入示范样地与两期样木数据 */
@@ -196,6 +232,59 @@ export async function ensureSeedData(): Promise<void> {
     healthClass: '健康',
     tiltDeg: 1,
     remark: '样地东南 3m 进界木',
+    round: 2,
+    measuredAt: now - 6 * day,
+  });
+  // 串株示例（同株被拆成两条）：第 1 期 7 号为一株红松；第 2 期被拆成 7、8 两条，
+  // 按树号硬配会把 8 号误判为进界木、生长量跨株。复查前需在「编号校正」归并。
+  trees.push({
+    id: newId('tree'),
+    plotId,
+    treeNo: '7',
+    species: '红松',
+    dbhCm: 10.2,
+    heightM: 7.8,
+    underBranchH: 2.1,
+    crownWidth: 2.0,
+    status: '活立木',
+    origin: '天然',
+    healthClass: '健康',
+    tiltDeg: 1,
+    remark: '样地东北 7 号桩',
+    round: 1,
+    measuredAt: now - 370 * day,
+  });
+  trees.push({
+    id: newId('tree'),
+    plotId,
+    treeNo: '7',
+    species: '红松',
+    dbhCm: 12.1,
+    heightM: 9.2,
+    underBranchH: 2.2,
+    crownWidth: 2.1,
+    status: '活立木',
+    origin: '天然',
+    healthClass: '健康',
+    tiltDeg: 1,
+    remark: '样地东北 7 号桩',
+    round: 2,
+    measuredAt: now - 6 * day,
+  });
+  trees.push({
+    id: newId('tree'),
+    plotId,
+    treeNo: '8',
+    species: '红松',
+    dbhCm: 11.8,
+    heightM: 8.9,
+    underBranchH: 2.0,
+    crownWidth: 2.0,
+    status: '活立木',
+    origin: '天然',
+    healthClass: '健康',
+    tiltDeg: 1,
+    remark: '样地东北 7 号桩（补录重号）',
     round: 2,
     measuredAt: now - 6 * day,
   });

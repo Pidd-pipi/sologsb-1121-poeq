@@ -22,6 +22,7 @@ import { useTreeStats } from '../hooks/useTreeStats';
 import RoundTag from '../components/common/RoundTag';
 import PlotCard from '../components/common/PlotCard';
 import { canopyFromCrown, formHeight, heightClassStats } from '../utils/forestCalc';
+import { getRecheckState } from '../utils/db';
 import type { TreeRecord } from '../types/tree';
 
 type Columns = NonNullable<TableProps<TreeRecord>['columns']>;
@@ -43,6 +44,12 @@ export default function PlotSummary() {
   const stats = useTreeStats(plotId);
 
   const [toast, setToast] = useState('');
+  const [recheckStale, setRecheckStale] = useState(false);
+
+  useEffect(() => {
+    if (!plotId) return;
+    void getRecheckState(plotId).then((s) => setRecheckStale(s?.status === 'stale'));
+  }, [plotId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -92,6 +99,9 @@ export default function PlotSummary() {
     if (!plot) return '';
     const lines: string[] = [];
     lines.push('森林样地调查记录');
+    if (recheckStale) {
+      lines.push('【注意】样木编号已校正，复查比对结果已失效待重算；复查相关旧值暂停使用，以重新生成的比对表为准。');
+    }
     lines.push(`样地号：${plot.plotNo}`);
     lines.push(`地点：${plot.locality}（${plot.lng}, ${plot.lat}）`);
     lines.push(`形状/面积：${plot.shape} / ${plot.area} m²`);
@@ -117,7 +127,7 @@ export default function PlotSummary() {
     lines.push('');
     lines.push(`导出时间：${new Date().toLocaleString('zh-CN')}`);
     return lines.join('\n');
-  }, [plot, stats, plotRegens, speciesRows]);
+  }, [plot, stats, plotRegens, speciesRows, recheckStale]);
 
   if (!plot) {
     return (
@@ -149,6 +159,24 @@ export default function PlotSummary() {
       </Space>
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
+      {recheckStale ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="复查结果已失效，汇总与导出暂停使用复查旧值"
+          description="样木编号已完成校正，引用这些样木的比对结果已作废。本页林分因子按当前档案重算，复查相关值请以重新生成的比对表为准。"
+          action={
+            <Space>
+              <Button size="small" type="link">
+                <Link to={`/plots/${plotId}/recheck`}>重新比对</Link>
+              </Button>
+              <Button size="small" type="link">
+                <Link to={`/plots/${plotId}/correction`}>编号校正</Link>
+              </Button>
+            </Space>
+          }
+        />
+      ) : null}
 
       <Row gutter={12}>
         <Col span={8}>

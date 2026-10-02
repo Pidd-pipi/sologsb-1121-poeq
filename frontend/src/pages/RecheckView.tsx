@@ -4,10 +4,12 @@ import { Alert, Button, Card, Col, Row, Select, Space, Statistic, Tag, Typograph
 import { SaveOutlined } from '@ant-design/icons';
 import { usePlotStore } from '../stores/plotStore';
 import { useTreeStore } from '../stores/treeStore';
+import { useTreeGroupStore } from '../stores/treeGroupStore';
 import GrowthDiffTable from '../components/common/GrowthDiffTable';
 import RoundTag from '../components/common/RoundTag';
-import { loadRecheckDiffs, saveRecheckDiffs } from '../utils/db';
+import { getRecheckState, loadRecheckDiffs, markRecheckFresh, saveRecheckDiffs } from '../utils/db';
 import { newId } from '../utils/id';
+import { groupCanonical, identityKeyOf } from '../types/treeGroup';
 import { growthRate, isDiffAbnormal, type RecheckDiff } from '../types/recheck';
 import type { TreeRecord } from '../types/tree';
 
@@ -20,6 +22,8 @@ export default function RecheckView() {
   const { id = '' } = useParams();
   const plot = usePlotStore((s) => s.items.find((p) => p.id === id));
   const trees = useTreeStore((s) => s.items);
+  const groups = useTreeGroupStore((s) => s.groups);
+  const loadGroups = useTreeGroupStore((s) => s.load);
 
   const rounds = useMemo(
     () => Array.from(new Set(trees.filter((t) => t.plotId === id).map((t) => t.round))).sort((a, b) => a - b),
@@ -29,6 +33,7 @@ export default function RecheckView() {
   const [baseRound, setBaseRound] = useState<number>(rounds[0] ?? 1);
   const [targetRound, setTargetRound] = useState<number>(rounds[rounds.length - 1] ?? 2);
   const [diffs, setDiffs] = useState<RecheckDiff[]>([]);
+  const [stale, setStale] = useState(false);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
 
@@ -41,10 +46,12 @@ export default function RecheckView() {
 
   useEffect(() => {
     if (!id) return;
+    void loadGroups(id);
     void loadRecheckDiffs(id).then((rows) => {
       if (rows.length > 0) setDiffs(rows);
     });
-  }, [id]);
+    void getRecheckState(id).then((s) => setStale(s?.status === 'stale'));
+  }, [id, loadGroups]);
 
   useEffect(() => {
     if (!toast) return;
@@ -59,40 +66,58 @@ export default function RecheckView() {
     }
     const baseList = trees.filter((t) => t.plotId === id && t.round === baseRound);
     const targetList = trees.filter((t) => t.plotId === id && t.round === targetRound);
-    const baseMap = new Map<string, TreeRecord>();
-    baseList.forEach((t) => baseMap.set(t.treeNo, t));
-    const targetMap = new Map<string, TreeRecord>();
-    targetList.forEach((t) => targetMap.set(t.treeNo, t));
-    const allNos = Array.from(new Set([...baseMap.keys(), ...targetMap.keys()])).sort((a, b) =>
-      a.localeCompare(b, 'zh-Hans-CN', { numeric: true }),
-    );
+    // 按身份键归并：已确认校正组按组匹配（串株归并/拆分后不再按树号硬配），其余按树号
+    const toMap = (list: TreeRecord[]) => {
+      const m = new Map<string, TreeRecord[]>();
+      list.forEach((t) => {
+        const key = identityKeyOf(t, groups);
+        const arr = m.get(key) ?? [];
+        arr.push(t);
+        m.set(key, arr);
+      });
+      return m;
+    };
+    const baseMap = toMap(baseList);
+    const targetMap = toMap(targetList);
+    const allKeys = Array.from(new Set([...baseMap.keys(), ...targetMap.keys()])).sort((a, b) => {
+      const na = groupCanonical(a, groups) ?? a.replace(/^n:/, '');
+      const nb = groupCanonical(b, groups) ?? b.replace(/^n:/, '');
+      return na.localeCompare(nb, 'zh-Hans-CN', { numeric: true });
+    });
 
-    const next: RecheckDiff[] = allNos.map((treeNo) => {
-      const b = baseMap.get(treeNo);
-      const t = targetMap.get(treeNo);
-      const baseDbh = b?.dbhCm;
-      const targetDbh = t?.dbhCm;
+    const next: RecheckDiff[] = allKeys.map((key) => {
+      const b = baseMap.get(key) ?? [];
+      const t = targetMap.get(key) ?? [];
+      const br = b[0];
+      const tr = t[0];
+      const multiRecord = b.length > 1 || t.length > 1;
+      const treeNo =
+        groupCanonical(key, groups) ?? tr?.treeNo ?? br?.treeNo ?? key.replace(/^n:/, '');
+      const baseDbh = br?.dbhCm;
+      const targetDbh = tr?.dbhCm;
       const dbhGrowth =
         baseDbh !== undefined && targetDbh !== undefined ? r2(targetDbh - baseDbh) : 0;
       const heightGrowth =
-        b && t ? r2(t.heightM - b.heightM) : 0;
-      const statusChange = b && t && b.status !== t.status ? `${b.status} → ${t.status}` : '';
-      const missingReason = !t ? '本期未复测（疑似采伐或倒伏）' : !b ? '本期新增进界木' : '';
+        br && tr ? r2(tr.heightM - br.heightM) : 0;
+      const statusChange = br && tr && br.status !== tr.status ? `${br.status} → ${tr.status}` : '';
+      const missingReason = !tr ? '本期未复测（疑似采伐或倒伏）' : !br ? '本期新增进界木' : '';
       return {
         id: newId('diff'),
         plotId: id,
         baseRound,
         targetRound,
         treeNo,
-        species: t?.species ?? b?.species ?? '',
+        identityKey: key,
+        species: tr?.species ?? br?.species ?? '',
         baseDbhCm: baseDbh,
         targetDbhCm: targetDbh,
-        baseHeightM: b?.heightM,
-        targetHeightM: t?.heightM,
+        baseHeightM: br?.heightM,
+        targetHeightM: tr?.heightM,
         dbhGrowth,
         heightGrowth,
         statusChange,
         missingReason,
+        multiRecord,
         generatedAt: Date.now(),
       };
     });
@@ -108,7 +133,9 @@ export default function RecheckView() {
       return;
     }
     await saveRecheckDiffs(diffs);
-    setToast(`逐株比对表已写入本地档案库（${diffs.length} 条）`);
+    await markRecheckFresh(id);
+    setStale(false);
+    setToast(`逐株比对表已写入本地档案库（${diffs.length} 条），复查结果已恢复有效`);
   };
 
   const abnormal = diffs.filter(isDiffAbnormal).length;
@@ -152,6 +179,19 @@ export default function RecheckView() {
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
       {error ? <Alert type="error" showIcon message={error} closable onClose={() => setError('')} /> : null}
+      {stale ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="复查结果已失效，待重算"
+          description="样木编号已做校正（归并/拆分/改号），引用这些样木的旧比对结果已作废。请重新生成逐株比对表并保存；在此之前，林分汇总与导出暂停使用复查旧值。"
+          action={
+            <Button size="small" type="link">
+              <Link to={`/plots/${plot.id}/correction`}>前往编号校正</Link>
+            </Button>
+          }
+        />
+      ) : null}
 
       <Card size="small">
         <Space wrap size={10}>

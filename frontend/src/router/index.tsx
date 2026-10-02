@@ -10,6 +10,7 @@ import PlotList from '../pages/PlotList';
 import TreeEntry from '../pages/TreeEntry';
 import RegenView from '../pages/RegenView';
 import RecheckView from '../pages/RecheckView';
+import TreeCorrection from '../pages/TreeCorrection';
 import PlotSummary from '../pages/PlotSummary';
 
 const { Header, Content } = Layout;
@@ -28,6 +29,7 @@ function Shell() {
       { key: firstPlotId ? `/plots/${firstPlotId}/trees` : '/plots', label: '样木录入' },
       { key: firstPlotId ? `/plots/${firstPlotId}/regen` : '/plots', label: '更新与灌木' },
       { key: firstPlotId ? `/plots/${firstPlotId}/recheck` : '/plots', label: '复查比对' },
+      { key: firstPlotId ? `/plots/${firstPlotId}/correction` : '/plots', label: '编号校正' },
       { key: firstPlotId ? `/summary/${firstPlotId}` : '/plots', label: '林分汇总' },
     ],
     [firstPlotId],
@@ -35,10 +37,11 @@ function Shell() {
 
   const selected = useMemo(() => {
     const path = location.pathname;
-    if (path.startsWith('/summary')) return items[4].key;
+    if (path.startsWith('/summary')) return items[5].key;
     if (path.endsWith('/trees')) return items[1].key;
     if (path.endsWith('/regen')) return items[2].key;
     if (path.endsWith('/recheck')) return items[3].key;
+    if (path.endsWith('/correction')) return items[4].key;
     return '/plots';
   }, [location.pathname, items]);
 
@@ -68,6 +71,7 @@ function Shell() {
           <Route path="/plots/:id/trees" element={<TreeEntry />} />
           <Route path="/plots/:id/regen" element={<RegenView />} />
           <Route path="/plots/:id/recheck" element={<RecheckView />} />
+          <Route path="/plots/:id/correction" element={<TreeCorrection />} />
           <Route path="/summary/:plotId" element={<PlotSummary />} />
           <Route path="*" element={<Navigate to="/plots" replace />} />
         </Routes>
