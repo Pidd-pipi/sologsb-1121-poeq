@@ -6,7 +6,11 @@ import { usePlotStore } from '../stores/plotStore';
 import { useTreeStore } from '../stores/treeStore';
 import GrowthDiffTable from '../components/common/GrowthDiffTable';
 import RoundTag from '../components/common/RoundTag';
-import { loadRecheckDiffs, saveRecheckDiffs } from '../utils/db';
+import {
+  loadRecheckDiffs,
+  loadStaleRechecks,
+  replaceRecheckDiffs,
+} from '../utils/db';
 import { newId } from '../utils/id';
 import { growthRate, isDiffAbnormal, type RecheckDiff } from '../types/recheck';
 import type { TreeRecord } from '../types/tree';
@@ -29,6 +33,7 @@ export default function RecheckView() {
   const [baseRound, setBaseRound] = useState<number>(rounds[0] ?? 1);
   const [targetRound, setTargetRound] = useState<number>(rounds[rounds.length - 1] ?? 2);
   const [diffs, setDiffs] = useState<RecheckDiff[]>([]);
+  const [staleCount, setStaleCount] = useState(0);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
 
@@ -41,8 +46,9 @@ export default function RecheckView() {
 
   useEffect(() => {
     if (!id) return;
-    void loadRecheckDiffs(id).then((rows) => {
+    void Promise.all([loadRecheckDiffs(id), loadStaleRechecks(id)]).then(([rows, staleRows]) => {
       if (rows.length > 0) setDiffs(rows);
+      setStaleCount(staleRows.length);
     });
   }, [id]);
 
@@ -52,9 +58,32 @@ export default function RecheckView() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  /** 期内重复树号硬拦截：硬配会把两株并成一条，生长量跨株 */
+  const duplicateNosInRound = (round: number): string[] => {
+    const counter = new Map<string, number>();
+    trees
+      .filter((t) => t.plotId === id && t.round === round)
+      .forEach((t) => counter.set(t.treeNo, (counter.get(t.treeNo) ?? 0) + 1));
+    return Array.from(counter.entries())
+      .filter(([, n]) => n > 1)
+      .map(([no]) => no)
+      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN', { numeric: true }));
+  };
+
+  const roundBlocked = (round: number): boolean => duplicateNosInRound(round).length > 0;
+
   const generate = () => {
     if (baseRound === targetRound) {
       setError('上期与本期不能是同一期次');
+      return;
+    }
+    const dupBase = duplicateNosInRound(baseRound);
+    const dupTarget = duplicateNosInRound(targetRound);
+    if (dupBase.length > 0 || dupTarget.length > 0) {
+      const parts: string[] = [];
+      if (dupBase.length > 0) parts.push(`第 ${baseRound} 期树号 ${dupBase.join('、')}`);
+      if (dupTarget.length > 0) parts.push(`第 ${targetRound} 期树号 ${dupTarget.join('、')}`);
+      setError(`${parts.join('；')} 在期内重复，复查硬配已拦截，请先到编号校正页拆分或作废后再比对`);
       return;
     }
     const baseList = trees.filter((t) => t.plotId === id && t.round === baseRound);
@@ -107,18 +136,27 @@ export default function RecheckView() {
       setError('请先生成比对表');
       return;
     }
-    await saveRecheckDiffs(diffs);
-    setToast(`逐株比对表已写入本地档案库（${diffs.length} 条）`);
+    // 重算保存：覆盖该两期旧比对（含已失效旧值），该两期的失效计数同步清零
+    const replacedStale = (
+      await loadRecheckDiffs(id)
+    ).filter(
+      (d) => d.baseRound === baseRound && d.targetRound === targetRound && d.stale === true,
+    ).length;
+    await replaceRecheckDiffs(id, baseRound, targetRound, diffs);
+    setStaleCount((prev) => Math.max(0, prev - replacedStale));
+    setToast(`逐株比对表已写入本地档案库（${diffs.length} 条），已替换该两期旧结果`);
   };
 
-  const abnormal = diffs.filter(isDiffAbnormal).length;
-  const missing = diffs.filter((d) => !d.targetDbhCm).length;
+  const activeDiffs = diffs.filter((d) => d.stale !== true);
+  const staleInView = diffs.length - activeDiffs.length;
+  const abnormal = activeDiffs.filter(isDiffAbnormal).length;
+  const missing = activeDiffs.filter((d) => !d.targetDbhCm).length;
   const avgRate =
-    diffs.filter((d) => d.targetDbhCm).length === 0
+    activeDiffs.filter((d) => d.targetDbhCm).length === 0
       ? 0
       : r2(
-          diffs.filter((d) => d.targetDbhCm).reduce((s, d) => s + growthRate(d), 0) /
-            diffs.filter((d) => d.targetDbhCm).length,
+          activeDiffs.filter((d) => d.targetDbhCm).reduce((s, d) => s + growthRate(d), 0) /
+            activeDiffs.filter((d) => d.targetDbhCm).length,
         );
 
   if (!plot) {
@@ -143,6 +181,9 @@ export default function RecheckView() {
           <Link to={`/plots/${plot.id}/trees`}>样木录入</Link>
         </Button>
         <Button type="link">
+          <Link to={`/plots/${plot.id}/correction`}>编号校正</Link>
+        </Button>
+        <Button type="link">
           <Link to={`/plots/${plot.id}/regen`}>更新与灌木</Link>
         </Button>
         <Button type="link">
@@ -152,6 +193,42 @@ export default function RecheckView() {
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
       {error ? <Alert type="error" showIcon message={error} closable onClose={() => setError('')} /> : null}
+
+      {(roundBlocked(baseRound) || roundBlocked(targetRound)) && (
+        <Alert
+          type="error"
+          showIcon
+          message="期内重复树号未处理，复查比对已暂停"
+          description={
+            <Space direction="vertical" size={2}>
+              <span>
+                第 {baseRound} 期重复树号：{duplicateNosInRound(baseRound).join('、') || '无'}；第 {targetRound}{' '}
+                期重复树号：{duplicateNosInRound(targetRound).join('、') || '无'}。
+              </span>
+              <span>按树号硬配会把两株并成一条、生长量跨株，须先完成编号校正。</span>
+              <Button size="small" type="primary" danger>
+                <Link to={`/plots/${plot.id}/correction`}>前往编号校正</Link>
+              </Button>
+            </Space>
+          }
+        />
+      )}
+
+      {staleCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`有 ${staleCount} 条历史复查结果因编号校正已失效（旧生长量可能跨株），请按校正后档案重新生成并保存；汇总与导出在失效清零前暂停旧值`}
+          action={
+            <Button size="small">
+              <Link to={`/plots/${plot.id}/correction`}>查看编号校正</Link>
+            </Button>
+          }
+        />
+      )}
+      {staleCount === 0 && staleInView > 0 && (
+        <Alert type="info" showIcon message="下方为本次新生成的比对表，保存后将替换对应两期的已失效结果。" />
+      )}
 
       <Card size="small">
         <Space wrap size={10}>
@@ -173,10 +250,18 @@ export default function RecheckView() {
               options={rounds.map((r) => ({ value: r, label: `第 ${r} 期` }))}
             />
           </span>
-          <Button type="primary" onClick={generate}>
+          <Button
+            type="primary"
+            onClick={generate}
+            disabled={roundBlocked(baseRound) || roundBlocked(targetRound)}
+          >
             生成逐株比对表
           </Button>
-          <Button icon={<SaveOutlined />} onClick={save}>
+          <Button
+            icon={<SaveOutlined />}
+            onClick={save}
+            disabled={roundBlocked(baseRound) || roundBlocked(targetRound)}
+          >
             保存比对结果
           </Button>
           <Typography.Text type="secondary">

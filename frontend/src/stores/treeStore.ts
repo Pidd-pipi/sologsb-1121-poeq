@@ -12,6 +12,8 @@ interface TreeState {
   update: (id: string, patch: Partial<TreeRecord>) => Promise<void>;
   remove: (id: string) => Promise<void>;
   byPlot: (plotId: string, round?: number) => TreeRecord[];
+  /** 编号校正等批量事务提交后，从档案库重新全量载入 */
+  reload: () => Promise<void>;
 }
 
 export const useTreeStore = create<TreeState>((set, get) => ({
@@ -45,6 +47,9 @@ export const useTreeStore = create<TreeState>((set, get) => ({
   async remove(id) {
     await db.trees.delete(id);
     set({ items: get().items.filter((it) => it.id !== id) });
+  },
+  async reload() {
+    await get().load();
   },
   byPlot(plotId, round) {
     return get()

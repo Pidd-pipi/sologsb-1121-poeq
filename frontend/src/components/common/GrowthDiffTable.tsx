@@ -1,4 +1,4 @@
-import { Table, Tag, Typography, type TableProps } from 'antd';
+import { Space, Table, Tag, Tooltip, Typography, type TableProps } from 'antd';
 import { growthRate, isDiffAbnormal, type RecheckDiff } from '../../types/recheck';
 
 export interface GrowthDiffTableProps {
@@ -10,12 +10,28 @@ type Columns = NonNullable<TableProps<RecheckDiff>['columns']>;
 
 /** 两期逐株差值表，生长量为负或缺失时高亮 */
 export default function GrowthDiffTable({ diffs, emptyText = '暂无复查比对结果' }: GrowthDiffTableProps) {
-  const sorted = [...diffs].sort((a, b) =>
-    a.treeNo.localeCompare(b.treeNo, 'zh-Hans-CN', { numeric: true }),
+  const sorted = [...diffs].sort(
+    (a, b) =>
+      Number(a.stale === true) - Number(b.stale === true) ||
+      a.baseRound - b.baseRound ||
+      a.targetRound - b.targetRound ||
+      a.treeNo.localeCompare(b.treeNo, 'zh-Hans-CN', { numeric: true }),
   );
 
   const columns: Columns = [
-    { title: '树号', dataIndex: 'treeNo', width: 80 },
+    { title: '树号', dataIndex: 'treeNo', width: 110,
+      render: (no: string, row) =>
+        row.stale ? (
+          <Space size={4} direction="vertical">
+            <span>{no}</span>
+            <Tooltip title={row.staleReason ?? '编号校正后该结果已失效，待重算'}>
+              <Tag color="red">已失效·待重算</Tag>
+            </Tooltip>
+          </Space>
+        ) : (
+          no
+        ),
+    },
     { title: '树种', dataIndex: 'species', width: 110 },
     {
       title: '上期胸径 cm',
@@ -81,7 +97,9 @@ export default function GrowthDiffTable({ diffs, emptyText = '暂无复查比对
         pagination={false}
         scroll={{ x: 1200 }}
         locale={{ emptyText }}
-        rowClassName={(row) => (isDiffAbnormal(row) ? 'diff-row-abnormal' : '')}
+        rowClassName={(row) =>
+          row.stale ? 'diff-row-stale' : isDiffAbnormal(row) ? 'diff-row-abnormal' : ''
+        }
       />
     </div>
   );

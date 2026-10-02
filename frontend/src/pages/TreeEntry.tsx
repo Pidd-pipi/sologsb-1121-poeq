@@ -130,6 +130,9 @@ export default function TreeEntry() {
           <Link to={`/plots/${plot.id}/regen`}>更新与灌木</Link>
         </Button>
         <Button type="link">
+          <Link to={`/plots/${plot.id}/correction`}>编号校正</Link>
+        </Button>
+        <Button type="link">
           <Link to={`/plots/${plot.id}/recheck`}>复查比对</Link>
         </Button>
         <Button type="link">

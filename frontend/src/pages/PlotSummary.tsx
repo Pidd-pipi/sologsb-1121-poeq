@@ -14,7 +14,7 @@ import {
   Typography,
   type TableProps,
 } from 'antd';
-import { CopyOutlined, DownloadOutlined } from '@ant-design/icons';
+import { CopyOutlined, DownloadOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import { usePlotStore } from '../stores/plotStore';
 import { useRegenStore } from '../stores/regenStore';
 import { useTreeStore } from '../stores/treeStore';
@@ -22,6 +22,7 @@ import { useTreeStats } from '../hooks/useTreeStats';
 import RoundTag from '../components/common/RoundTag';
 import PlotCard from '../components/common/PlotCard';
 import { canopyFromCrown, formHeight, heightClassStats } from '../utils/forestCalc';
+import { loadStaleRechecks } from '../utils/db';
 import type { TreeRecord } from '../types/tree';
 
 type Columns = NonNullable<TableProps<TreeRecord>['columns']>;
@@ -43,6 +44,14 @@ export default function PlotSummary() {
   const stats = useTreeStats(plotId);
 
   const [toast, setToast] = useState('');
+  const [staleCount, setStaleCount] = useState(0);
+
+  useEffect(() => {
+    if (!plotId) return;
+    void loadStaleRechecks(plotId).then((rows) => setStaleCount(rows.length));
+  }, [plotId]);
+
+  const exportPaused = staleCount > 0;
 
   useEffect(() => {
     if (!toast) return;
@@ -116,8 +125,12 @@ export default function PlotSummary() {
     });
     lines.push('');
     lines.push(`导出时间：${new Date().toLocaleString('zh-CN')}`);
+    if (staleCount > 0) {
+      lines.push('');
+      lines.push(`【暂停旧值】有 ${staleCount} 条复查结果因样木编号校正已失效，生长量须重算后再导出正式记录。`);
+    }
     return lines.join('\n');
-  }, [plot, stats, plotRegens, speciesRows]);
+  }, [plot, stats, plotRegens, speciesRows, staleCount]);
 
   if (!plot) {
     return (
@@ -141,6 +154,9 @@ export default function PlotSummary() {
           <Link to={`/plots/${plot.id}/trees`}>样木录入</Link>
         </Button>
         <Button type="link">
+          <Link to={`/plots/${plot.id}/correction`}>编号校正</Link>
+        </Button>
+        <Button type="link">
           <Link to={`/plots/${plot.id}/regen`}>更新与灌木</Link>
         </Button>
         <Button type="link">
@@ -149,6 +165,23 @@ export default function PlotSummary() {
       </Space>
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
+
+      {exportPaused && (
+        <Alert
+          type="error"
+          showIcon
+          icon={<ExclamationCircleOutlined />}
+          message={`有 ${staleCount} 条复查结果因编号校正已失效，调查记录复制/导出已暂停旧值`}
+          description={
+            <Space direction="vertical" size={2}>
+              <span>页面统计已按校正后档案实时计算，但复查生长量旧值可能跨株，重算并保存后再导出。</span>
+              <Button size="small" type="primary">
+                <Link to={`/plots/${plot.id}/recheck`}>前往复查比对重算</Link>
+              </Button>
+            </Space>
+          }
+        />
+      )}
 
       <Row gutter={12}>
         <Col span={8}>
@@ -243,6 +276,7 @@ export default function PlotSummary() {
             <Button
               size="small"
               icon={<CopyOutlined />}
+              disabled={exportPaused}
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(report);
@@ -258,6 +292,7 @@ export default function PlotSummary() {
               size="small"
               type="primary"
               icon={<DownloadOutlined />}
+              disabled={exportPaused}
               onClick={() => {
                 const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
                 const url = URL.createObjectURL(blob);
